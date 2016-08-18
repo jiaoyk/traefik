@@ -5,32 +5,34 @@ import (
 	"sync"
 
 	"crypto/x509"
+	"github.com/containous/traefik/cluster"
 	"github.com/xenolf/lego/acme"
 )
 
-var _ acme.ChallengeProvider = (*inMemoryChallengeProvider)(nil)
+var _ acme.ChallengeProvider = (*challengeProvider)(nil)
 
-type inMemoryChallengeProvider struct {
-	challengeCerts map[string]*tls.Certificate
-	lock           sync.RWMutex
+type challengeProvider struct {
+	store cluster.Store
+	lock  sync.RWMutex
 }
 
-func newWrapperChallengeProvider() *inMemoryChallengeProvider {
-	return &inMemoryChallengeProvider{
-		challengeCerts: map[string]*tls.Certificate{},
+func newMemoryChallengeProvider(store cluster.Store) *challengeProvider {
+	return &challengeProvider{
+		store: store,
 	}
 }
 
-func (c *inMemoryChallengeProvider) getCertificate(domain string) (cert *tls.Certificate, exists bool) {
+func (c *challengeProvider) getCertificate(domain string) (cert *tls.Certificate, exists bool) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	if cert, ok := c.challengeCerts[domain]; ok {
+	account := c.store.Get().(*Account)
+	if cert, ok := account.ChallengeCerts[domain]; ok {
 		return cert, true
 	}
 	return nil, false
 }
 
-func (c *inMemoryChallengeProvider) Present(domain, token, keyAuth string) error {
+func (c *challengeProvider) Present(domain, token, keyAuth string) error {
 	cert, _, err := acme.TLSSNI01ChallengeCert(keyAuth)
 	if err != nil {
 		return err
@@ -42,16 +44,25 @@ func (c *inMemoryChallengeProvider) Present(domain, token, keyAuth string) error
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	for i := range cert.Leaf.DNSNames {
-		c.challengeCerts[cert.Leaf.DNSNames[i]] = &cert
+	transaction, err := c.store.Begin()
+	if err != nil {
+		return err
 	}
-
-	return nil
+	account := c.store.Get().(*Account)
+	for i := range cert.Leaf.DNSNames {
+		account.ChallengeCerts[cert.Leaf.DNSNames[i]] = &cert
+	}
+	return transaction.Commit(account)
 }
 
-func (c *inMemoryChallengeProvider) CleanUp(domain, token, keyAuth string) error {
+func (c *challengeProvider) CleanUp(domain, token, keyAuth string) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	delete(c.challengeCerts, domain)
-	return nil
+	transaction, err := c.store.Begin()
+	if err != nil {
+		return err
+	}
+	account := c.store.Get().(*Account)
+	delete(account.ChallengeCerts, domain)
+	return transaction.Commit(account)
 }

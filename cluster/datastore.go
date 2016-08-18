@@ -12,17 +12,16 @@ import (
 	"time"
 )
 
-// Object is the struct to store
-type Object interface{}
-
 // Metadata stores Object plus metadata
 type Metadata struct {
 	Lock string
 }
 
+var _ Store = (*Datastore)(nil)
+
 // Datastore holds a struct synced in a KV store
 type Datastore struct {
-	kv        *staert.KvSource
+	kv        staert.KvSource
 	ctx       context.Context
 	localLock *sync.RWMutex
 	object    Object
@@ -31,7 +30,7 @@ type Datastore struct {
 }
 
 // NewDataStore creates a Datastore
-func NewDataStore(kvSource *staert.KvSource, ctx context.Context, object Object) (*Datastore, error) {
+func NewDataStore(kvSource staert.KvSource, ctx context.Context, object Object) (*Datastore, error) {
 	datastore := Datastore{
 		kv:        kvSource,
 		ctx:       ctx,
@@ -93,7 +92,7 @@ func (d *Datastore) watchChanges() error {
 }
 
 // Begin creates a transaction with the KV store.
-func (d *Datastore) Begin() (*Transaction, error) {
+func (d *Datastore) Begin() (Transaction, error) {
 	id := uuid.NewV4().String()
 	remoteLock, err := d.kv.NewLock(d.lockKey, &store.LockOptions{TTL: 20 * time.Second, Value: []byte(id)})
 	if err != nil {
@@ -135,7 +134,7 @@ func (d *Datastore) Begin() (*Transaction, error) {
 	}
 
 	// we synced with KV store, we can now return Setter
-	return &Transaction{
+	return &datastoreTransaction{
 		Datastore:  d,
 		remoteLock: remoteLock,
 	}, nil
@@ -154,15 +153,16 @@ func (d *Datastore) Get() Object {
 	return d.object
 }
 
-// Transaction allows to set a struct in the KV store
-type Transaction struct {
+var _ Transaction = (*datastoreTransaction)(nil)
+
+type datastoreTransaction struct {
 	*Datastore
 	remoteLock store.Locker
 	dirty      bool
 }
 
 // Commit allows to set an object in the KV store
-func (s *Transaction) Commit(object Object) error {
+func (s *datastoreTransaction) Commit(object Object) error {
 	s.localLock.Lock()
 	defer s.localLock.Unlock()
 	if s.dirty {

@@ -193,7 +193,7 @@ type Store struct {
 
 // Cluster holds cluster config
 type Cluster struct {
-	Node  string
+	Node  string `description:"Node name"`
 	Store *Store
 }
 

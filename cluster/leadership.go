@@ -15,6 +15,7 @@ type Leadership struct {
 	*safe.Pool
 	*types.Cluster
 	candidate *leadership.Candidate
+	leader    bool
 }
 
 // NewLeadership creates a leadership
@@ -70,9 +71,16 @@ func (l *Leadership) run(candidate *leadership.Candidate, ctx context.Context) e
 func (l *Leadership) onElection(elected bool) {
 	if elected {
 		log.Infof("Node %s elected leader ♚", l.Cluster.Node)
+		l.leader = true
 		l.Start()
 	} else {
 		log.Infof("Node %s elected slave ♝", l.Cluster.Node)
+		l.leader = false
 		l.Stop()
 	}
+}
+
+// IsLeader returns true if current node is leader
+func (l *Leadership) IsLeader() bool {
+	return l.leader
 }

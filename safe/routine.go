@@ -82,7 +82,7 @@ func (p *Pool) Stop() {
 	p.lock.Unlock()
 }
 
-// Start starts all stoped routines
+// Start starts all stopped routines
 func (p *Pool) Start() {
 	p.lock.Lock()
 	p.ctx, p.cancel = context.WithCancel(p.baseCtx)
