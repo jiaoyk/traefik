@@ -50,7 +50,7 @@ func (l *Leadership) Participate(pool *safe.Pool) {
 // Resign resigns from being a leader
 func (l *Leadership) Resign() {
 	l.candidate.Resign()
-	log.Infof("Node %s resined", l.Cluster.Node)
+	log.Infof("Node %s resigned", l.Cluster.Node)
 }
 
 func (l *Leadership) run(candidate *leadership.Candidate, ctx context.Context) error {

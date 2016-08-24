@@ -93,6 +93,7 @@ func NewServer(globalConfiguration GlobalConfiguration) *Server {
 // Start starts the server and blocks until server is shutted down.
 func (server *Server) Start() {
 	server.startLeadership()
+	time.Sleep(5 * time.Second)
 	server.startHTTPServers()
 	server.routinesPool.Go(func(stop chan bool) {
 		server.listenProviders(stop)
@@ -279,7 +280,7 @@ func (server *Server) listenConfigurations(stop chan bool) {
 }
 
 func (server *Server) postLoadConfig() {
-	if server.globalConfiguration.ACME != nil && server.globalConfiguration.ACME.OnHostRule {
+	if server.globalConfiguration.ACME != nil && server.globalConfiguration.ACME.OnHostRule && server.leadership.IsLeader() {
 		currentConfigurations := server.currentConfigurations.Get().(configs)
 		for _, configuration := range currentConfigurations {
 			for _, frontend := range configuration.Frontends {
@@ -397,9 +398,16 @@ func (server *Server) createTLSConfig(entryPointName string, tlsOption *TLS, rou
 					}
 					return false
 				}
-				err := server.globalConfiguration.ACME.CreateLocalConfig(config, checkOnDemandDomain)
-				if err != nil {
-					return nil, err
+				if server.leadership == nil {
+					err := server.globalConfiguration.ACME.CreateLocalConfig(config, checkOnDemandDomain)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					err := server.globalConfiguration.ACME.CreateClusterConfig(server.leadership, config, checkOnDemandDomain)
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 		} else {

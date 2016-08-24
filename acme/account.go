@@ -4,10 +4,13 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
+	"fmt"
 	log "github.com/Sirupsen/logrus"
 	"github.com/xenolf/lego/acme"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,7 +18,7 @@ import (
 // Account is used to store lets encrypt registration info
 type Account struct {
 	Email              string
-	Registration       *acme.RegistrationResource
+	Registration       string
 	PrivateKey         []byte
 	DomainsCertificate DomainsCertificates
 	ChallengeCerts     map[string]*tls.Certificate
@@ -28,7 +31,11 @@ func (a Account) GetEmail() string {
 
 // GetRegistration returns lets encrypt registration resource
 func (a Account) GetRegistration() *acme.RegistrationResource {
-	return a.Registration
+	fmt.Printf("registration: %s\n", a.Registration)
+	reg := &acme.RegistrationResource{}
+	json.NewDecoder(strings.NewReader(a.Registration)).Decode(reg)
+	fmt.Printf("registration: %+v\n", reg)
+	return reg
 }
 
 // GetPrivateKey returns private key

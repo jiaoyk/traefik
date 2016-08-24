@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	log "github.com/Sirupsen/logrus"
@@ -12,6 +13,7 @@ import (
 	"github.com/containous/traefik/cluster"
 	"github.com/containous/traefik/safe"
 	"github.com/xenolf/lego/acme"
+	"golang.org/x/net/context"
 	"io/ioutil"
 	fmtlog "log"
 	"os"
@@ -84,7 +86,6 @@ type Domain struct {
 
 func (a *ACME) init() error {
 	acme.Logger = fmtlog.New(ioutil.Discard, "", 0)
-	log.Debugf("Generating default certificate...")
 	// no certificates in TLS config, so we add a default one
 	cert, err := generateDefaultCertificate()
 	if err != nil {
@@ -95,77 +96,107 @@ func (a *ACME) init() error {
 }
 
 // CreateClusterConfig creates a tls.config using ACME configuration in cluster mode
-func (a *ACME) CreateClusterConfig(kvSource staert.KvSource, leadership *cluster.Leadership, pool *safe.Pool, tlsConfig *tls.Config, checkOnDemandDomain func(domain string) bool) error {
+func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tls.Config, checkOnDemandDomain func(domain string) bool) error {
 	err := a.init()
 	if err != nil {
 		return err
 	}
 	if len(a.Storage) == 0 {
-		return errors.New("Empty Store, please provide a filename/key for certs storage")
+		return errors.New("Empty Store, please provide a key for certs storage")
 	}
 	a.checkOnDemandDomain = checkOnDemandDomain
 	tlsConfig.Certificates = append(tlsConfig.Certificates, *a.defaultCertificate)
 	tlsConfig.GetCertificate = a.getCertificate
 
-	kvSource.Prefix += "/acme/account"
-	a.store, err = cluster.NewDataStore(kvSource, pool.Ctx(), &Account{})
+	datastore, err := cluster.NewDataStore(
+		staert.KvSource{
+			Store:  leadership.Store,
+			Prefix: leadership.Store.Prefix + "/acme/account",
+		},
+		leadership.Pool.Ctx(), &Account{},
+		func(object cluster.Object) {
+			if !leadership.IsLeader() {
+				a.client, err = a.buildACMEClient(object.(*Account))
+				if err != nil {
+					log.Errorf("Error building ACME client %+v: %s", object, err.Error())
+				}
+			}
+		})
 	if err != nil {
 		return err
 	}
+	a.store = datastore
 	a.challengeProvider = newMemoryChallengeProvider(a.store)
 
 	var needRegister bool
-	var account *Account
-
-	// load account
-	account = a.store.Get().(*Account)
-
-	if account == nil || len(account.Email) == 0 {
-		log.Infof("Generating ACME Account...")
-		account, err = a.generateAccount()
-		if err != nil {
-			return err
-		}
-		needRegister = true
-	}
-
-	a.client, err = a.buildACMEClient()
+	object, err := datastore.Load()
 	if err != nil {
 		return err
 	}
+	account := object.(*Account)
 
-	if needRegister {
-		// New users will need to register; be sure to save it
-		reg, err := a.client.Register()
+	if leadership.IsLeader() {
+		transaction, err := a.store.Begin()
 		if err != nil {
 			return err
 		}
-		account.Registration = reg
-	}
-
-	// The client has a URL to the current Let's Encrypt Subscriber
-	// Agreement. The user will need to agree to it.
-	err = a.client.AgreeToTOS()
-	if err != nil {
-		return err
-	}
-
-	safe.Go(func() {
-		a.retrieveCertificates()
-		if err := a.renewCertificates(); err != nil {
-			log.Errorf("Error renewing ACME certificate %+v: %s", account, err.Error())
+		if account == nil || len(account.Email) == 0 {
+			account, err = a.generateAccount()
+			if err != nil {
+				return err
+			}
+			needRegister = true
 		}
-	})
-
-	ticker := time.NewTicker(24 * time.Hour)
-	safe.Go(func() {
-		for range ticker.C {
+		log.Debugf("buildACMEClient...")
+		a.client, err = a.buildACMEClient(account)
+		if err != nil {
+			return err
+		}
+		if needRegister {
+			// New users will need to register; be sure to save it
+			log.Debugf("Register...")
+			reg, err := a.client.Register()
+			if err != nil {
+				return err
+			}
+			bytes, err := json.Marshal(reg)
+			if err != nil {
+				return err
+			}
+			account.Registration = string(bytes)
+			fmt.Printf("registration: %+v\n", reg)
+		}
+		// The client has a URL to the current Let's Encrypt Subscriber
+		// Agreement. The user will need to agree to it.
+		log.Debugf("AgreeToTOS...")
+		fmt.Printf("Account: %+v\n", account)
+		err = a.client.AgreeToTOS()
+		if err != nil {
+			return err
+		}
+		safe.Go(func() {
+			a.retrieveCertificates()
 			if err := a.renewCertificates(); err != nil {
 				log.Errorf("Error renewing ACME certificate %+v: %s", account, err.Error())
 			}
-		}
+		})
+		ticker := time.NewTicker(24 * time.Hour)
+		leadership.Pool.GoCtx(func(ctx context.Context) {
+			for range ticker.C {
+				if err := a.renewCertificates(); err != nil {
+					log.Errorf("Error renewing ACME certificate %+v: %s", account, err.Error())
+				}
+			}
 
-	})
+		})
+		bytes, err := json.Marshal(account)
+		fmt.Printf("Account: %s\n", string(bytes))
+		err = transaction.Commit(account)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -176,7 +207,7 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 		return err
 	}
 	if len(a.Storage) == 0 {
-		return errors.New("Empty Store, please provide a filename/key for certs storage")
+		return errors.New("Empty Store, please provide a filename for certs storage")
 	}
 	a.checkOnDemandDomain = checkOnDemandDomain
 	tlsConfig.Certificates = append(tlsConfig.Certificates, *a.defaultCertificate)
@@ -205,7 +236,7 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 		needRegister = true
 	}
 
-	a.client, err = a.buildACMEClient()
+	a.client, err = a.buildACMEClient(account)
 	if err != nil {
 		return err
 	}
@@ -216,7 +247,11 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 		if err != nil {
 			return err
 		}
-		account.Registration = reg
+		bytes, err := json.Marshal(reg)
+		if err != nil {
+			return err
+		}
+		account.Registration = string(bytes)
 	}
 
 	// The client has a URL to the current Let's Encrypt Subscriber
@@ -369,18 +404,17 @@ func (a *ACME) renewCertificates() error {
 	return nil
 }
 
-func (a *ACME) buildACMEClient() (*acme.Client, error) {
+func (a *ACME) buildACMEClient(account *Account) (*acme.Client, error) {
 	caServer := "https://acme-v01.api.letsencrypt.org/directory"
 	if len(a.CAServer) > 0 {
 		caServer = a.CAServer
 	}
-	account := a.store.Get().(*Account)
 	client, err := acme.NewClient(caServer, account, acme.RSA4096)
 	if err != nil {
 		return nil, err
 	}
-	a.client.ExcludeChallenges([]acme.Challenge{acme.HTTP01, acme.DNS01})
-	err = a.client.SetChallengeProvider(acme.TLSSNI01, a.challengeProvider)
+	client.ExcludeChallenges([]acme.Challenge{acme.HTTP01, acme.DNS01})
+	err = client.SetChallengeProvider(acme.TLSSNI01, a.challengeProvider)
 	if err != nil {
 		return nil, err
 	}

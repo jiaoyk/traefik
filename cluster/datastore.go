@@ -17,6 +17,9 @@ type Metadata struct {
 	Lock string
 }
 
+// Listener is called when Object has been changed in KV store
+type Listener func(Object)
+
 var _ Store = (*Datastore)(nil)
 
 // Datastore holds a struct synced in a KV store
@@ -27,10 +30,11 @@ type Datastore struct {
 	object    Object
 	meta      *Metadata
 	lockKey   string
+	listener  Listener
 }
 
 // NewDataStore creates a Datastore
-func NewDataStore(kvSource staert.KvSource, ctx context.Context, object Object) (*Datastore, error) {
+func NewDataStore(kvSource staert.KvSource, ctx context.Context, object Object, listener Listener) (*Datastore, error) {
 	datastore := Datastore{
 		kv:        kvSource,
 		ctx:       ctx,
@@ -38,6 +42,7 @@ func NewDataStore(kvSource staert.KvSource, ctx context.Context, object Object) 
 		object:    object,
 		lockKey:   kvSource.Prefix + "/lock",
 		localLock: &sync.RWMutex{},
+		listener:  listener,
 	}
 	err := datastore.watchChanges()
 	if err != nil {
@@ -77,6 +82,10 @@ func (d *Datastore) watchChanges() error {
 						return err
 					}
 					d.localLock.Unlock()
+					// log.Debugf("Datastore object change received: %+v", d.object)
+					if d.listener != nil {
+						d.listener(d.object)
+					}
 				}
 			}
 		}
@@ -146,6 +155,17 @@ func (d *Datastore) get() *Metadata {
 	return d.meta
 }
 
+// Load load atomically a struct from the KV store
+func (d *Datastore) Load() (Object, error) {
+	d.localLock.Lock()
+	defer d.localLock.Unlock()
+	err := d.kv.LoadConfig(d.object)
+	if err != nil {
+		return nil, err
+	}
+	return d.object, nil
+}
+
 // Get atomically a struct from the KV store
 func (d *Datastore) Get() Object {
 	d.localLock.RLock()
@@ -180,5 +200,6 @@ func (s *datastoreTransaction) Commit(object Object) error {
 
 	s.Datastore.object = object
 	s.dirty = true
+	// log.Debugf("Datastore object saved: %+v", s.object)
 	return nil
 }
