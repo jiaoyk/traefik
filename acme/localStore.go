@@ -15,7 +15,7 @@ var _ cluster.Store = (*LocalStore)(nil)
 type LocalStore struct {
 	file        string
 	storageLock sync.RWMutex
-	account     Account
+	account     *Account
 }
 
 // NewLocalStore create a LocalStore
@@ -37,8 +37,11 @@ func (s *LocalStore) Get() cluster.Object {
 func (s *LocalStore) Load() (*Account, error) {
 	s.storageLock.Lock()
 	defer s.storageLock.Unlock()
-	account := Account{
-		DomainsCertificate: DomainsCertificates{},
+	account := &Account{
+		DomainsCertificate: DomainsCertificates{
+			Certs: []*DomainsCertificate{},
+			lock:  &sync.RWMutex{},
+		},
 	}
 	file, err := ioutil.ReadFile(s.file)
 	if err != nil {
@@ -53,7 +56,7 @@ func (s *LocalStore) Load() (*Account, error) {
 	}
 	s.account = account
 	log.Infof("Loaded ACME config from store %s", s.file)
-	return &account, nil
+	return account, nil
 }
 
 // func (s *LocalStore) saveAccount(account *Account) error {
@@ -82,6 +85,8 @@ type localTransaction struct {
 
 // Commit allows to set an object in the file storage
 func (t *localTransaction) Commit(object cluster.Object) error {
+	fmt.Printf("Commit: %+v\n", object)
+	t.LocalStore.account = object.(*Account)
 	defer t.storageLock.Unlock()
 	if t.dirty {
 		return fmt.Errorf("Transaction already used. Please begin a new one.")

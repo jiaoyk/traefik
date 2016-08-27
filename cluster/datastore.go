@@ -183,6 +183,7 @@ type datastoreTransaction struct {
 
 // Commit allows to set an object in the KV store
 func (s *datastoreTransaction) Commit(object Object) error {
+	fmt.Printf("Commit: %+v\n", object)
 	s.localLock.Lock()
 	defer s.localLock.Unlock()
 	if s.dirty {

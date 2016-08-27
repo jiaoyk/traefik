@@ -134,6 +134,7 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 		return err
 	}
 	account := object.(*Account)
+	fmt.Printf("Load account: %+v\n", account)
 
 	if leadership.IsLeader() {
 		transaction, err := a.store.Begin()
@@ -146,6 +147,12 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 				return err
 			}
 			needRegister = true
+		} else {
+			account.registration = &acme.RegistrationResource{}
+			err = json.Unmarshal(account.Registration, account.registration)
+		}
+		if err != nil {
+			return err
 		}
 		log.Debugf("buildACMEClient...")
 		a.client, err = a.buildACMEClient(account)
@@ -159,18 +166,22 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 			if err != nil {
 				return err
 			}
-			bytes, err := json.Marshal(reg)
+			account.registration = reg
+			bytes, err := json.Marshal(account.registration)
 			if err != nil {
 				return err
 			}
-			account.Registration = string(bytes)
-			fmt.Printf("registration: %+v\n", reg)
+			account.Registration = bytes
 		}
 		// The client has a URL to the current Let's Encrypt Subscriber
 		// Agreement. The user will need to agree to it.
 		log.Debugf("AgreeToTOS...")
 		fmt.Printf("Account: %+v\n", account)
 		err = a.client.AgreeToTOS()
+		if err != nil {
+			return err
+		}
+		err = transaction.Commit(account)
 		if err != nil {
 			return err
 		}
@@ -189,12 +200,6 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 			}
 
 		})
-		bytes, err := json.Marshal(account)
-		fmt.Printf("Account: %s\n", string(bytes))
-		err = transaction.Commit(account)
-		if err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -227,6 +232,11 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 		if err != nil {
 			return err
 		}
+		account.registration = &acme.RegistrationResource{}
+		err := json.Unmarshal(account.Registration, account.registration)
+		if err != nil {
+			return err
+		}
 	} else {
 		log.Infof("Generating ACME Account...")
 		account, err = a.generateAccount()
@@ -236,6 +246,7 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 		needRegister = true
 	}
 
+	log.Infof("buildACMEClient...")
 	a.client, err = a.buildACMEClient(account)
 	if err != nil {
 		return err
@@ -243,19 +254,22 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 
 	if needRegister {
 		// New users will need to register; be sure to save it
+		log.Infof("Register...")
 		reg, err := a.client.Register()
 		if err != nil {
 			return err
 		}
-		bytes, err := json.Marshal(reg)
+		account.registration = reg
+		bytes, err := json.Marshal(account.registration)
 		if err != nil {
 			return err
 		}
-		account.Registration = string(bytes)
+		account.Registration = bytes
 	}
 
 	// The client has a URL to the current Let's Encrypt Subscriber
 	// Agreement. The user will need to agree to it.
+	log.Infof("AgreeToTOS...")
 	err = a.client.AgreeToTOS()
 	if err != nil {
 		// Let's Encrypt Subscriber Agreement renew ?
@@ -271,6 +285,14 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 	}
 	// save account
 	err = a.saveAccount()
+	if err != nil {
+		return err
+	}
+	trans, err := localStore.Begin()
+	if err != nil {
+		return err
+	}
+	err = trans.Commit(account)
 	if err != nil {
 		return err
 	}
@@ -321,6 +343,7 @@ func (a *ACME) generateAccount() (*Account, error) {
 		Email:              a.Email,
 		PrivateKey:         x509.MarshalPKCS1PrivateKey(privateKey),
 		DomainsCertificate: DomainsCertificates{Certs: []*DomainsCertificate{}, lock: &sync.RWMutex{}},
+		ChallengeCerts:     map[string]*tls.Certificate{},
 	}, nil
 }
 

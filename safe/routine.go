@@ -40,6 +40,13 @@ func (p *Pool) Ctx() context.Context {
 	return p.ctx
 }
 
+//AddGoCtx adds a recoverable goroutine with a context without starting it
+func (p *Pool) AddGoCtx(goroutine routineCtx) {
+	p.lock.Lock()
+	p.routinesCtx = append(p.routinesCtx, goroutine)
+	p.lock.Unlock()
+}
+
 //GoCtx starts a recoverable goroutine with a context
 func (p *Pool) GoCtx(goroutine routineCtx) {
 	p.lock.Lock()

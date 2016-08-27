@@ -18,10 +18,11 @@ import (
 // Account is used to store lets encrypt registration info
 type Account struct {
 	Email              string
-	Registration       string
+	Registration       []byte
 	PrivateKey         []byte
 	DomainsCertificate DomainsCertificates
 	ChallengeCerts     map[string]*tls.Certificate
+	registration       *acme.RegistrationResource
 }
 
 // GetEmail returns email
@@ -31,10 +32,12 @@ func (a Account) GetEmail() string {
 
 // GetRegistration returns lets encrypt registration resource
 func (a Account) GetRegistration() *acme.RegistrationResource {
-	fmt.Printf("registration: %s\n", a.Registration)
+	if a.registration != nil {
+		return a.registration
+	}
 	reg := &acme.RegistrationResource{}
-	json.NewDecoder(strings.NewReader(a.Registration)).Decode(reg)
-	fmt.Printf("registration: %+v\n", reg)
+	json.NewDecoder(strings.NewReader(string(a.Registration))).Decode(reg)
+	fmt.Printf("GetRegistration: %+v\n", reg)
 	return reg
 }
 
