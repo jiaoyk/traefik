@@ -34,7 +34,7 @@ func (s *LocalStore) Get() cluster.Object {
 }
 
 // Load loads file into store
-func (s *LocalStore) Load() (*Account, error) {
+func (s *LocalStore) Load() (cluster.Object, error) {
 	s.storageLock.Lock()
 	defer s.storageLock.Unlock()
 	account := &Account{
@@ -85,7 +85,6 @@ type localTransaction struct {
 
 // Commit allows to set an object in the file storage
 func (t *localTransaction) Commit(object cluster.Object) error {
-	fmt.Printf("Commit: %+v\n", object)
 	t.LocalStore.account = object.(*Account)
 	defer t.storageLock.Unlock()
 	if t.dirty {

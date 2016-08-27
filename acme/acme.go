@@ -114,94 +114,97 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 			Prefix: leadership.Store.Prefix + "/acme/account",
 		},
 		leadership.Pool.Ctx(), &Account{},
-		func(object cluster.Object) {
+		func(object cluster.Object) error {
 			if !leadership.IsLeader() {
 				a.client, err = a.buildACMEClient(object.(*Account))
 				if err != nil {
 					log.Errorf("Error building ACME client %+v: %s", object, err.Error())
 				}
 			}
+
+			return nil
 		})
 	if err != nil {
 		return err
 	}
+
 	a.store = datastore
 	a.challengeProvider = newMemoryChallengeProvider(a.store)
 
-	var needRegister bool
-	object, err := datastore.Load()
-	if err != nil {
-		return err
-	}
-	account := object.(*Account)
-	fmt.Printf("Load account: %+v\n", account)
-
-	if leadership.IsLeader() {
-		transaction, err := a.store.Begin()
-		if err != nil {
-			return err
-		}
-		if account == nil || len(account.Email) == 0 {
-			account, err = a.generateAccount()
-			if err != nil {
-				return err
-			}
-			needRegister = true
-		} else {
-			account.registration = &acme.RegistrationResource{}
-			err = json.Unmarshal(account.Registration, account.registration)
-		}
-		if err != nil {
-			return err
-		}
-		log.Debugf("buildACMEClient...")
-		a.client, err = a.buildACMEClient(account)
-		if err != nil {
-			return err
-		}
-		if needRegister {
-			// New users will need to register; be sure to save it
-			log.Debugf("Register...")
-			reg, err := a.client.Register()
-			if err != nil {
-				return err
-			}
-			account.registration = reg
-			bytes, err := json.Marshal(account.registration)
-			if err != nil {
-				return err
-			}
-			account.Registration = bytes
-		}
-		// The client has a URL to the current Let's Encrypt Subscriber
-		// Agreement. The user will need to agree to it.
-		log.Debugf("AgreeToTOS...")
-		fmt.Printf("Account: %+v\n", account)
-		err = a.client.AgreeToTOS()
-		if err != nil {
-			return err
-		}
-		err = transaction.Commit(account)
-		if err != nil {
-			return err
-		}
-		safe.Go(func() {
-			a.retrieveCertificates()
+	ticker := time.NewTicker(24 * time.Hour)
+	leadership.Pool.AddGoCtx(func(ctx context.Context) {
+		log.Infof("Starting ACME renew job...")
+		for range ticker.C {
 			if err := a.renewCertificates(); err != nil {
-				log.Errorf("Error renewing ACME certificate %+v: %s", account, err.Error())
+				log.Errorf("Error renewing ACME certificate: %s", err.Error())
 			}
-		})
-		ticker := time.NewTicker(24 * time.Hour)
-		leadership.Pool.GoCtx(func(ctx context.Context) {
-			for range ticker.C {
+		}
+	})
+
+	leadership.AddListener(func(elected bool) error {
+		if elected {
+			object, err := a.store.Load()
+			if err != nil {
+				return err
+			}
+			account := object.(*Account)
+			transaction, err := a.store.Begin()
+			if err != nil {
+				return err
+			}
+			var needRegister bool
+			if account == nil || len(account.Email) == 0 {
+				account, err = a.generateAccount()
+				if err != nil {
+					return err
+				}
+				needRegister = true
+			} else {
+				account.registration = &acme.RegistrationResource{}
+				err = json.Unmarshal(account.Registration, account.registration)
+			}
+			if err != nil {
+				return err
+			}
+			log.Debugf("buildACMEClient...")
+			a.client, err = a.buildACMEClient(account)
+			if err != nil {
+				return err
+			}
+			if needRegister {
+				// New users will need to register; be sure to save it
+				log.Debugf("Register...")
+				reg, err := a.client.Register()
+				if err != nil {
+					return err
+				}
+				account.registration = reg
+				bytes, err := json.Marshal(account.registration)
+				if err != nil {
+					return err
+				}
+				account.Registration = bytes
+			}
+			// The client has a URL to the current Let's Encrypt Subscriber
+			// Agreement. The user will need to agree to it.
+			log.Debugf("AgreeToTOS...")
+			err = a.client.AgreeToTOS()
+			if err != nil {
+				return err
+			}
+			err = transaction.Commit(account)
+			if err != nil {
+				return err
+			}
+			safe.Go(func() {
+				a.retrieveCertificates()
 				if err := a.renewCertificates(); err != nil {
 					log.Errorf("Error renewing ACME certificate %+v: %s", account, err.Error())
 				}
-			}
-
-		})
-	}
-
+			})
+		}
+		return nil
+	})
 	return nil
 }
 
@@ -228,12 +231,13 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 	if fileInfo, fileErr := os.Stat(a.Storage); fileErr == nil && fileInfo.Size() != 0 {
 		log.Infof("Loading ACME Account...")
 		// load account
-		account, err = localStore.Load()
+		object, err := localStore.Load()
 		if err != nil {
 			return err
 		}
+		account = object.(*Account)
 		account.registration = &acme.RegistrationResource{}
-		err := json.Unmarshal(account.Registration, account.registration)
+		err = json.Unmarshal(account.Registration, account.registration)
 		if err != nil {
 			return err
 		}
@@ -428,6 +432,7 @@ func (a *ACME) renewCertificates() error {
 }
 
 func (a *ACME) buildACMEClient(account *Account) (*acme.Client, error) {
+	log.Debugf("Building ACME client...")
 	caServer := "https://acme-v01.api.letsencrypt.org/directory"
 	if len(a.CAServer) > 0 {
 		caServer = a.CAServer

@@ -5,6 +5,7 @@ type Object interface{}
 
 // Store is a generic interface to represents a storage
 type Store interface {
+	Load() (Object, error)
 	Get() Object
 	Begin() (Transaction, error)
 }

@@ -18,7 +18,7 @@ type Metadata struct {
 }
 
 // Listener is called when Object has been changed in KV store
-type Listener func(Object)
+type Listener func(Object) error
 
 var _ Store = (*Datastore)(nil)
 
@@ -84,7 +84,10 @@ func (d *Datastore) watchChanges() error {
 					d.localLock.Unlock()
 					// log.Debugf("Datastore object change received: %+v", d.object)
 					if d.listener != nil {
-						d.listener(d.object)
+						err := d.listener(d.object)
+						if err != nil {
+							log.Errorf("Error calling datastore listener: %s", err)
+						}
 					}
 				}
 			}
@@ -183,7 +186,6 @@ type datastoreTransaction struct {
 
 // Commit allows to set an object in the KV store
 func (s *datastoreTransaction) Commit(object Object) error {
-	fmt.Printf("Commit: %+v\n", object)
 	s.localLock.Lock()
 	defer s.localLock.Unlock()
 	if s.dirty {

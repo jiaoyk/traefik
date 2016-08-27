@@ -92,9 +92,8 @@ func NewServer(globalConfiguration GlobalConfiguration) *Server {
 
 // Start starts the server and blocks until server is shutted down.
 func (server *Server) Start() {
-	server.startLeadership()
-	time.Sleep(5 * time.Second)
 	server.startHTTPServers()
+	server.startLeadership()
 	server.routinesPool.Go(func(stop chan bool) {
 		server.listenProviders(stop)
 	})

@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"fmt"
 	log "github.com/Sirupsen/logrus"
 	"github.com/xenolf/lego/acme"
 	"reflect"
@@ -37,7 +36,6 @@ func (a Account) GetRegistration() *acme.RegistrationResource {
 	}
 	reg := &acme.RegistrationResource{}
 	json.NewDecoder(strings.NewReader(string(a.Registration))).Decode(reg)
-	fmt.Printf("GetRegistration: %+v\n", reg)
 	return reg
 }
 
