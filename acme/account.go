@@ -2,11 +2,12 @@ package acme
 
 import (
 	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	log "github.com/Sirupsen/logrus"
 	"github.com/xenolf/lego/acme"
 	"reflect"
 	"strings"
@@ -19,9 +20,24 @@ type Account struct {
 	Email              string
 	Registration       []byte
 	PrivateKey         []byte
-	DomainsCertificate DomainsCertificates
-	ChallengeCerts     map[string]*tls.Certificate
+	DomainsCertificate *DomainsCertificates
+	ChallengeCerts     map[string][]byte
 	registration       *acme.RegistrationResource
+}
+
+func NewAccount(email string) (*Account, error) {
+	// Create a user. New accounts need an email and private key to start
+	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	if err != nil {
+		return nil, err
+	}
+	domainsCerts := &DomainsCertificates{Certs: []*DomainsCertificate{}}
+	domainsCerts.Init()
+	return &Account{
+		Email:              email,
+		PrivateKey:         x509.MarshalPKCS1PrivateKey(privateKey),
+		DomainsCertificate: domainsCerts,
+		ChallengeCerts:     map[string][]byte{}}, nil
 }
 
 // GetEmail returns email
@@ -60,13 +76,10 @@ type Certificate struct {
 // DomainsCertificates stores a certificate for multiple domains
 type DomainsCertificates struct {
 	Certs []*DomainsCertificate
-	lock  *sync.RWMutex
+	lock  sync.RWMutex
 }
 
 func (dc *DomainsCertificates) Init() error {
-	if dc.lock == nil {
-		dc.lock = &sync.RWMutex{}
-	}
 	dc.lock.Lock()
 	defer dc.lock.Unlock()
 	for _, domainsCertificate := range dc.Certs {

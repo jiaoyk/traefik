@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/BurntSushi/ty/fun"
-	log "github.com/Sirupsen/logrus"
+	"github.com/Sirupsen/logrus"
+	"github.com/cenkalti/backoff"
+	"github.com/containous/traefik/log"
 	"github.com/containous/traefik/safe"
 	"github.com/containous/traefik/types"
 	"github.com/emilevauge/backoff"
@@ -269,7 +271,7 @@ func (provider *ConsulCatalog) getNodes(index map[string][]string) ([]catalogUpd
 		name := strings.ToLower(service)
 		if !strings.Contains(name, " ") && !visited[name] {
 			visited[name] = true
-			log.WithFields(log.Fields{
+			log.WithFields(logrus.Fields{
 				"service": name,
 			}).Debug("Fetching service")
 			healthy, err := provider.healthyNodes(name)

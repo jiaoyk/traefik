@@ -20,10 +20,10 @@ import (
 	"syscall"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/codegangsta/negroni"
 	"github.com/containous/mux"
 	"github.com/containous/traefik/cluster"
+	"github.com/containous/traefik/log"
 	"github.com/containous/traefik/middlewares"
 	"github.com/containous/traefik/provider"
 	"github.com/containous/traefik/safe"
@@ -128,7 +128,7 @@ func (server *Server) Close() {
 		if ctx.Err() == context.Canceled {
 			return
 		} else if ctx.Err() == context.DeadlineExceeded {
-			log.Debugf("I love you all :'( ✝")
+			log.Warnf("Timeout while stopping traefik, killing instance ✝")
 			os.Exit(1)
 		}
 	}(ctx)
@@ -146,17 +146,17 @@ func (server *Server) Close() {
 func (server *Server) startLeadership() {
 	if server.leadership != nil {
 		server.leadership.Participate(server.routinesPool)
-		server.leadership.GoCtx(func(ctx context.Context) {
-			log.Debugf("Started test routine")
-			<-ctx.Done()
-			log.Debugf("Stopped test routine")
-		})
+		// server.leadership.AddGoCtx(func(ctx context.Context) {
+		// 	log.Debugf("Started test routine")
+		// 	<-ctx.Done()
+		// 	log.Debugf("Stopped test routine")
+		// })
 	}
 }
 
 func (server *Server) stopLeadership() {
 	if server.leadership != nil {
-		server.leadership.Resign()
+		server.leadership.Stop()
 	}
 }
 

@@ -3,7 +3,6 @@ package acme
 import (
 	"encoding/json"
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"github.com/containous/traefik/cluster"
 	"io/ioutil"
 	"sync"
@@ -37,12 +36,7 @@ func (s *LocalStore) Get() cluster.Object {
 func (s *LocalStore) Load() (cluster.Object, error) {
 	s.storageLock.Lock()
 	defer s.storageLock.Unlock()
-	account := &Account{
-		DomainsCertificate: DomainsCertificates{
-			Certs: []*DomainsCertificate{},
-			lock:  &sync.RWMutex{},
-		},
-	}
+	account := &Account{}
 	file, err := ioutil.ReadFile(s.file)
 	if err != nil {
 		return nil, err

@@ -1,8 +1,8 @@
 package safe
 
 import (
+	"github.com/containous/traefik/log"
 	"golang.org/x/net/context"
-	"log"
 	"runtime/debug"
 	"sync"
 )
@@ -131,6 +131,6 @@ func GoWithRecover(goroutine func(), customRecover func(err interface{})) {
 }
 
 func defaultRecoverGoroutine(err interface{}) {
-	log.Println(err)
+	log.Errorf("Error in Go routine: %s", err)
 	debug.PrintStack()
 }

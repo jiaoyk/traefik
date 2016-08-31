@@ -1,16 +1,13 @@
 package acme
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"github.com/containous/staert"
 	"github.com/containous/traefik/cluster"
+	logger "github.com/containous/traefik/log"
 	"github.com/containous/traefik/safe"
 	"github.com/xenolf/lego/acme"
 	"golang.org/x/net/context"
@@ -18,14 +15,12 @@ import (
 	fmtlog "log"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/containous/traefik/safe"
 	"github.com/xenolf/lego/acme"
 )
-
 
 // ACME allows to connect to lets encrypt and retrieve certs
 type ACME struct {
@@ -134,7 +129,11 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 	ticker := time.NewTicker(24 * time.Hour)
 	leadership.Pool.AddGoCtx(func(ctx context.Context) {
 		log.Infof("Starting ACME renew job...")
-		for range ticker.C {
+		defer log.Infof("Stopped ACME renew job...")
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 			if err := a.renewCertificates(); err != nil {
 				log.Errorf("Error renewing ACME certificate: %s", err.Error())
 			}
@@ -147,14 +146,14 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 			if err != nil {
 				return err
 			}
-			account := object.(*Account)
 			transaction, err := a.store.Begin()
 			if err != nil {
 				return err
 			}
+			account := object.(*Account)
 			var needRegister bool
 			if account == nil || len(account.Email) == 0 {
-				account, err = a.generateAccount()
+				account, err = NewAccount(a.Email)
 				if err != nil {
 					return err
 				}
@@ -243,7 +242,7 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 		}
 	} else {
 		log.Infof("Generating ACME Account...")
-		account, err = a.generateAccount()
+		account, err = NewAccount(a.Email)
 		if err != nil {
 			return err
 		}
@@ -323,9 +322,11 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 func (a *ACME) getCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	account := a.store.Get().(*Account)
 	if challengeCert, ok := a.challengeProvider.getCertificate(clientHello.ServerName); ok {
+		log.Debugf("ACME got challenge %s", clientHello.ServerName)
 		return challengeCert, nil
 	}
 	if domainCert, ok := account.DomainsCertificate.getCertificateForDomain(clientHello.ServerName); ok {
+		log.Debugf("ACME got domaincert %s", clientHello.ServerName)
 		return domainCert.tlsCert, nil
 	}
 	if a.OnDemand {
@@ -334,21 +335,8 @@ func (a *ACME) getCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificat
 		}
 		return a.loadCertificateOnDemand(clientHello)
 	}
+	log.Debugf("ACME got nothing %s", clientHello.ServerName)
 	return nil, nil
-}
-
-func (a *ACME) generateAccount() (*Account, error) {
-	// Create a user. New accounts need an email and private key to start
-	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return nil, err
-	}
-	return &Account{
-		Email:              a.Email,
-		PrivateKey:         x509.MarshalPKCS1PrivateKey(privateKey),
-		DomainsCertificate: DomainsCertificates{Certs: []*DomainsCertificate{}, lock: &sync.RWMutex{}},
-		ChallengeCerts:     map[string]*tls.Certificate{},
-	}, nil
 }
 
 func (a *ACME) retrieveCertificates() {
@@ -357,12 +345,6 @@ func (a *ACME) retrieveCertificates() {
 		// check if cert isn't already loaded
 		account := a.store.Get().(*Account)
 		if _, exists := account.DomainsCertificate.exists(domain); !exists {
-			transaction, err := a.store.Begin()
-			if err != nil {
-				log.Errorf("Error creating ACME store transaction from domain %s: %s", domain, err.Error())
-				continue
-			}
-			account = a.store.Get().(*Account)
 			domains := []string{}
 			domains = append(domains, domain.Main)
 			domains = append(domains, domain.SANs...)
@@ -371,6 +353,12 @@ func (a *ACME) retrieveCertificates() {
 				log.Errorf("Error getting ACME certificate for domain %s: %s", domains, err.Error())
 				continue
 			}
+			transaction, err := a.store.Begin()
+			if err != nil {
+				log.Errorf("Error creating ACME store transaction from domain %s: %s", domain, err.Error())
+				continue
+			}
+			account = a.store.Get().(*Account)
 			_, err = account.DomainsCertificate.addCertificateForDomains(certificateResource, domain)
 			if err != nil {
 				log.Errorf("Error adding ACME certificate for domain %s: %s", domains, err.Error())
@@ -450,10 +438,6 @@ func (a *ACME) buildACMEClient(account *Account) (*acme.Client, error) {
 }
 
 func (a *ACME) loadCertificateOnDemand(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	transaction, err := a.store.Begin()
-	if err != nil {
-		return nil, err
-	}
 	account := a.store.Get().(*Account)
 	if certificateResource, ok := account.DomainsCertificate.getCertificateForDomain(clientHello.ServerName); ok {
 		return certificateResource.tlsCert, nil
@@ -463,6 +447,11 @@ func (a *ACME) loadCertificateOnDemand(clientHello *tls.ClientHelloInfo) (*tls.C
 		return nil, err
 	}
 	log.Debugf("Got certificate on demand for domain %s", clientHello.ServerName)
+	transaction, err := a.store.Begin()
+	if err != nil {
+		return nil, err
+	}
+	account = a.store.Get().(*Account)
 	cert, err := account.DomainsCertificate.addCertificateForDomains(certificate, Domain{Main: clientHello.ServerName})
 	if err != nil {
 		return nil, err
@@ -476,11 +465,6 @@ func (a *ACME) loadCertificateOnDemand(clientHello *tls.ClientHelloInfo) (*tls.C
 // LoadCertificateForDomains loads certificates from ACME for given domains
 func (a *ACME) LoadCertificateForDomains(domains []string) {
 	safe.Go(func() {
-		transaction, err := a.store.Begin()
-		if err != nil {
-			log.Errorf("Error creating transaction %+v : %v", domains, err)
-			return
-		}
 		account := a.store.Get().(*Account)
 		var domain Domain
 		if len(domains) == 0 {
@@ -502,6 +486,12 @@ func (a *ACME) LoadCertificateForDomains(domains []string) {
 			return
 		}
 		log.Debugf("Got certificate for domains %+v", domains)
+		transaction, err := a.store.Begin()
+		if err != nil {
+			log.Errorf("Error creating transaction %+v : %v", domains, err)
+			return
+		}
+		account = a.store.Get().(*Account)
 		_, err = account.DomainsCertificate.addCertificateForDomains(certificate, domain)
 		if err != nil {
 			log.Errorf("Error adding ACME certificates %+v : %v", domains, err)

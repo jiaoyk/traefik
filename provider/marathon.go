@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/ty/fun"
-	log "github.com/Sirupsen/logrus"
+	"github.com/containous/traefik/log"
 	"github.com/containous/traefik/safe"
 	"github.com/containous/traefik/types"
 	"github.com/emilevauge/backoff"

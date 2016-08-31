@@ -2,9 +2,9 @@ package cluster
 
 import (
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"github.com/cenkalti/backoff"
 	"github.com/containous/staert"
+	"github.com/containous/traefik/log"
 	"github.com/docker/libkv/store"
 	"github.com/satori/go.uuid"
 	"golang.org/x/net/context"
@@ -106,6 +106,7 @@ func (d *Datastore) watchChanges() error {
 // Begin creates a transaction with the KV store.
 func (d *Datastore) Begin() (Transaction, error) {
 	id := uuid.NewV4().String()
+	log.Debugf("Transaction %s begins", id)
 	remoteLock, err := d.kv.NewLock(d.lockKey, &store.LockOptions{TTL: 20 * time.Second, Value: []byte(id)})
 	if err != nil {
 		return nil, err
@@ -149,6 +150,7 @@ func (d *Datastore) Begin() (Transaction, error) {
 	return &datastoreTransaction{
 		Datastore:  d,
 		remoteLock: remoteLock,
+		id:         id,
 	}, nil
 }
 
@@ -182,6 +184,7 @@ type datastoreTransaction struct {
 	*Datastore
 	remoteLock store.Locker
 	dirty      bool
+	id         string
 }
 
 // Commit allows to set an object in the KV store
@@ -204,5 +207,6 @@ func (s *datastoreTransaction) Commit(object Object) error {
 	s.Datastore.object = object
 	s.dirty = true
 	// log.Debugf("Datastore object saved: %+v", s.object)
+	log.Debugf("Transaction commited %s", s.id)
 	return nil
 }
