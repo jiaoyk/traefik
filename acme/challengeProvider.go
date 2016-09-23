@@ -4,20 +4,12 @@ import (
 	"crypto/tls"
 	"sync"
 
-	"bytes"
-	"crypto/rsa"
 	"crypto/x509"
-	"encoding/gob"
 	"github.com/containous/traefik/cluster"
 	"github.com/containous/traefik/log"
 	"github.com/xenolf/lego/acme"
 	"time"
 )
-
-func init() {
-	gob.Register(rsa.PrivateKey{})
-	gob.Register(rsa.PublicKey{})
-}
 
 var _ acme.ChallengeProviderTimeout = (*challengeProvider)(nil)
 
@@ -40,28 +32,24 @@ func (c *challengeProvider) getCertificate(domain string) (cert *tls.Certificate
 	if account.ChallengeCerts == nil {
 		return nil, false
 	}
-	if certBinary, ok := account.ChallengeCerts[domain]; ok {
-		cert := &tls.Certificate{}
-		var buffer bytes.Buffer
-		buffer.Write(certBinary)
-		dec := gob.NewDecoder(&buffer)
-		err := dec.Decode(cert)
+	if challenge, ok := account.ChallengeCerts[domain]; ok {
+		cert, err := tls.X509KeyPair(challenge.Certificate, challenge.PrivateKey)
 		if err != nil {
-			log.Errorf("Error unmarshaling challenge cert %s", err.Error())
+			log.Errorf("Error loading challenge cert %s", err.Error())
 			return nil, false
 		}
-		return cert, true
+		return &cert, true
 	}
 	return nil, false
 }
 
 func (c *challengeProvider) Present(domain, token, keyAuth string) error {
 	log.Debugf("Challenge Present %s", domain)
-	cert, _, err := acme.TLSSNI01ChallengeCert(keyAuth)
+	cert, _, err := TLSSNI01ChallengeCert(keyAuth)
 	if err != nil {
 		return err
 	}
-	cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+	leaf, err := x509.ParseCertificate(cert.certificate.Certificate[0])
 	if err != nil {
 		return err
 	}
@@ -74,17 +62,11 @@ func (c *challengeProvider) Present(domain, token, keyAuth string) error {
 	}
 	account := object.(*Account)
 	if account.ChallengeCerts == nil {
-		account.ChallengeCerts = map[string][]byte{}
+		account.ChallengeCerts = map[string]ChallengeCert{}
 	}
-	for i := range cert.Leaf.DNSNames {
-		var buffer bytes.Buffer
-		enc := gob.NewEncoder(&buffer)
-		err := enc.Encode(cert)
-		if err != nil {
-			return err
-		}
-		account.ChallengeCerts[cert.Leaf.DNSNames[i]] = buffer.Bytes()
-		log.Debugf("Challenge Present cert: %s", cert.Leaf.DNSNames[i])
+	for i := range leaf.DNSNames {
+		account.ChallengeCerts[leaf.DNSNames[i]] = cert
+		log.Debugf("Challenge Present cert: %s", leaf.DNSNames[i])
 	}
 	return transaction.Commit(account)
 }
