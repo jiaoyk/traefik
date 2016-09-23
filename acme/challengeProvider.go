@@ -4,12 +4,20 @@ import (
 	"crypto/tls"
 	"sync"
 
+	"bytes"
+	"crypto/rsa"
 	"crypto/x509"
-	"encoding/json"
+	"encoding/gob"
 	"github.com/containous/traefik/cluster"
+	"github.com/containous/traefik/log"
 	"github.com/xenolf/lego/acme"
 	"time"
 )
+
+func init() {
+	gob.Register(rsa.PrivateKey{})
+	gob.Register(rsa.PublicKey{})
+}
 
 var _ acme.ChallengeProviderTimeout = (*challengeProvider)(nil)
 
@@ -34,7 +42,10 @@ func (c *challengeProvider) getCertificate(domain string) (cert *tls.Certificate
 	}
 	if certBinary, ok := account.ChallengeCerts[domain]; ok {
 		cert := &tls.Certificate{}
-		err := json.Unmarshal(certBinary, cert)
+		var buffer bytes.Buffer
+		buffer.Write(certBinary)
+		dec := gob.NewDecoder(&buffer)
+		err := dec.Decode(cert)
 		if err != nil {
 			log.Errorf("Error unmarshaling challenge cert %s", err.Error())
 			return nil, false
@@ -57,19 +68,23 @@ func (c *challengeProvider) Present(domain, token, keyAuth string) error {
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	transaction, err := c.store.Begin()
+	transaction, object, err := c.store.Begin()
 	if err != nil {
 		return err
 	}
-	account := c.store.Get().(*Account)
+	account := object.(*Account)
 	if account.ChallengeCerts == nil {
 		account.ChallengeCerts = map[string][]byte{}
 	}
 	for i := range cert.Leaf.DNSNames {
-		account.ChallengeCerts[cert.Leaf.DNSNames[i]], err = json.Marshal(&cert)
+		var buffer bytes.Buffer
+		enc := gob.NewEncoder(&buffer)
+		err := enc.Encode(cert)
 		if err != nil {
 			return err
 		}
+		account.ChallengeCerts[cert.Leaf.DNSNames[i]] = buffer.Bytes()
+		log.Debugf("Challenge Present cert: %s", cert.Leaf.DNSNames[i])
 	}
 	return transaction.Commit(account)
 }
@@ -78,11 +93,11 @@ func (c *challengeProvider) CleanUp(domain, token, keyAuth string) error {
 	log.Debugf("Challenge CleanUp %s", domain)
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	transaction, err := c.store.Begin()
+	transaction, object, err := c.store.Begin()
 	if err != nil {
 		return err
 	}
-	account := c.store.Get().(*Account)
+	account := object.(*Account)
 	delete(account.ChallengeCerts, domain)
 	return transaction.Commit(account)
 }

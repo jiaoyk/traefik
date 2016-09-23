@@ -279,7 +279,13 @@ func (server *Server) listenConfigurations(stop chan bool) {
 }
 
 func (server *Server) postLoadConfig() {
-	if server.globalConfiguration.ACME != nil && server.globalConfiguration.ACME.OnHostRule && server.leadership.IsLeader() {
+	if server.globalConfiguration.ACME == nil {
+		return
+	}
+	if server.leadership != nil && !server.leadership.IsLeader() {
+		return
+	}
+	if server.globalConfiguration.ACME.OnHostRule {
 		currentConfigurations := server.currentConfigurations.Get().(configs)
 		for _, configuration := range currentConfigurations {
 			for _, frontend := range configuration.Frontends {

@@ -7,7 +7,7 @@ type Object interface{}
 type Store interface {
 	Load() (Object, error)
 	Get() Object
-	Begin() (Transaction, error)
+	Begin() (Transaction, Object, error)
 }
 
 // Transaction allows to set a struct in the KV store

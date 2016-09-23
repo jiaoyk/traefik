@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/containous/traefik/cluster"
+	"github.com/containous/traefik/log"
 	"io/ioutil"
 	"sync"
 )
@@ -44,10 +45,7 @@ func (s *LocalStore) Load() (cluster.Object, error) {
 	if err := json.Unmarshal(file, &account); err != nil {
 		return nil, err
 	}
-	err = account.DomainsCertificate.Init()
-	if err != nil {
-		return nil, err
-	}
+	account.Init()
 	s.account = account
 	log.Infof("Loaded ACME config from store %s", s.file)
 	return account, nil
@@ -65,9 +63,9 @@ func (s *LocalStore) Load() (cluster.Object, error) {
 // }
 
 // Begin creates a transaction with the KV store.
-func (s *LocalStore) Begin() (cluster.Transaction, error) {
+func (s *LocalStore) Begin() (cluster.Transaction, cluster.Object, error) {
 	s.storageLock.Lock()
-	return &localTransaction{LocalStore: s}, nil
+	return &localTransaction{LocalStore: s}, s.account, nil
 }
 
 var _ cluster.Transaction = (*localTransaction)(nil)

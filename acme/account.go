@@ -6,11 +6,10 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
+	"github.com/containous/traefik/log"
 	"github.com/xenolf/lego/acme"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 )
@@ -18,11 +17,19 @@ import (
 // Account is used to store lets encrypt registration info
 type Account struct {
 	Email              string
-	Registration       []byte
+	Registration       *acme.RegistrationResource
 	PrivateKey         []byte
-	DomainsCertificate *DomainsCertificates
+	DomainsCertificate DomainsCertificates
 	ChallengeCerts     map[string][]byte
-	registration       *acme.RegistrationResource
+}
+
+// Init inits acccount struct
+func (a *Account) Init() error {
+	err := a.DomainsCertificate.Init()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func NewAccount(email string) (*Account, error) {
@@ -31,7 +38,7 @@ func NewAccount(email string) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	domainsCerts := &DomainsCertificates{Certs: []*DomainsCertificate{}}
+	domainsCerts := DomainsCertificates{Certs: []*DomainsCertificate{}}
 	domainsCerts.Init()
 	return &Account{
 		Email:              email,
@@ -47,12 +54,7 @@ func (a Account) GetEmail() string {
 
 // GetRegistration returns lets encrypt registration resource
 func (a Account) GetRegistration() *acme.RegistrationResource {
-	if a.registration != nil {
-		return a.registration
-	}
-	reg := &acme.RegistrationResource{}
-	json.NewDecoder(strings.NewReader(string(a.Registration))).Decode(reg)
-	return reg
+	return a.Registration
 }
 
 // GetPrivateKey returns private key

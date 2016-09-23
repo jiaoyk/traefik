@@ -1,11 +1,12 @@
 package cluster
 
 import (
+	"encoding/json"
 	"fmt"
-	"github.com/cenkalti/backoff"
 	"github.com/containous/staert"
 	"github.com/containous/traefik/log"
 	"github.com/docker/libkv/store"
+	"github.com/emilevauge/backoff"
 	"github.com/satori/go.uuid"
 	"golang.org/x/net/context"
 	"sync"
@@ -14,7 +15,22 @@ import (
 
 // Metadata stores Object plus metadata
 type Metadata struct {
-	Lock string
+	object Object
+	Object []byte
+	Lock   string
+}
+
+func (m *Metadata) marshall() error {
+	var err error
+	m.Object, err = json.Marshal(m.object)
+	return err
+}
+
+func (m *Metadata) unmarshall() error {
+	if len(m.Object) == 0 {
+		return nil
+	}
+	return json.Unmarshal(m.Object, m.object)
 }
 
 // Listener is called when Object has been changed in KV store
@@ -27,7 +43,6 @@ type Datastore struct {
 	kv        staert.KvSource
 	ctx       context.Context
 	localLock *sync.RWMutex
-	object    Object
 	meta      *Metadata
 	lockKey   string
 	listener  Listener
@@ -38,8 +53,7 @@ func NewDataStore(kvSource staert.KvSource, ctx context.Context, object Object, 
 	datastore := Datastore{
 		kv:        kvSource,
 		ctx:       ctx,
-		meta:      &Metadata{},
-		object:    object,
+		meta:      &Metadata{object: object},
 		lockKey:   kvSource.Prefix + "/lock",
 		localLock: &sync.RWMutex{},
 		listener:  listener,
@@ -71,12 +85,12 @@ func (d *Datastore) watchChanges() error {
 						return err
 					}
 					d.localLock.Lock()
-					err := d.kv.LoadConfig(d.object)
+					err := d.kv.LoadConfig(d.meta)
 					if err != nil {
 						d.localLock.Unlock()
 						return err
 					}
-					err = d.kv.LoadConfig(d.meta)
+					err = d.meta.unmarshall()
 					if err != nil {
 						d.localLock.Unlock()
 						return err
@@ -84,7 +98,7 @@ func (d *Datastore) watchChanges() error {
 					d.localLock.Unlock()
 					// log.Debugf("Datastore object change received: %+v", d.object)
 					if d.listener != nil {
-						err := d.listener(d.object)
+						err := d.listener(d.meta.object)
 						if err != nil {
 							log.Errorf("Error calling datastore listener: %s", err)
 						}
@@ -104,12 +118,12 @@ func (d *Datastore) watchChanges() error {
 }
 
 // Begin creates a transaction with the KV store.
-func (d *Datastore) Begin() (Transaction, error) {
+func (d *Datastore) Begin() (Transaction, Object, error) {
 	id := uuid.NewV4().String()
 	log.Debugf("Transaction %s begins", id)
 	remoteLock, err := d.kv.NewLock(d.lockKey, &store.LockOptions{TTL: 20 * time.Second, Value: []byte(id)})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	stopCh := make(chan struct{})
 	ctx, cancel := context.WithCancel(d.ctx)
@@ -121,11 +135,11 @@ func (d *Datastore) Begin() (Transaction, error) {
 	select {
 	case <-ctx.Done():
 		if errLock != nil {
-			return nil, errLock
+			return nil, nil, errLock
 		}
 	case <-d.ctx.Done():
 		stopCh <- struct{}{}
-		return nil, d.ctx.Err()
+		return nil, nil, d.ctx.Err()
 	}
 
 	// we got the lock! Now make sure we are synced with KV store
@@ -143,7 +157,7 @@ func (d *Datastore) Begin() (Transaction, error) {
 	ebo.MaxElapsedTime = 60 * time.Second
 	err = backoff.RetryNotify(operation, ebo, notify)
 	if err != nil {
-		return nil, fmt.Errorf("Datastore cannot sync: %v", err)
+		return nil, nil, fmt.Errorf("Datastore cannot sync: %v", err)
 	}
 
 	// we synced with KV store, we can now return Setter
@@ -151,7 +165,7 @@ func (d *Datastore) Begin() (Transaction, error) {
 		Datastore:  d,
 		remoteLock: remoteLock,
 		id:         id,
-	}, nil
+	}, d.meta.object, nil
 }
 
 func (d *Datastore) get() *Metadata {
@@ -164,18 +178,22 @@ func (d *Datastore) get() *Metadata {
 func (d *Datastore) Load() (Object, error) {
 	d.localLock.Lock()
 	defer d.localLock.Unlock()
-	err := d.kv.LoadConfig(d.object)
+	err := d.kv.LoadConfig(d.meta)
 	if err != nil {
 		return nil, err
 	}
-	return d.object, nil
+	err = d.meta.unmarshall()
+	if err != nil {
+		return nil, err
+	}
+	return d.meta.object, nil
 }
 
 // Get atomically a struct from the KV store
 func (d *Datastore) Get() Object {
 	d.localLock.RLock()
 	defer d.localLock.RUnlock()
-	return d.object
+	return d.meta.object
 }
 
 var _ Transaction = (*datastoreTransaction)(nil)
@@ -194,7 +212,12 @@ func (s *datastoreTransaction) Commit(object Object) error {
 	if s.dirty {
 		return fmt.Errorf("Transaction already used. Please begin a new one.")
 	}
-	err := s.kv.StoreConfig(object)
+	s.Datastore.meta.object = object
+	err := s.Datastore.meta.marshall()
+	if err != nil {
+		return err
+	}
+	err = s.kv.StoreConfig(s.Datastore.meta)
 	if err != nil {
 		return err
 	}
@@ -204,7 +227,6 @@ func (s *datastoreTransaction) Commit(object Object) error {
 		return err
 	}
 
-	s.Datastore.object = object
 	s.dirty = true
 	// log.Debugf("Datastore object saved: %+v", s.object)
 	log.Debugf("Transaction commited %s", s.id)

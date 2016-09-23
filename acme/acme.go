@@ -2,12 +2,11 @@ package acme
 
 import (
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/containous/staert"
 	"github.com/containous/traefik/cluster"
-	logger "github.com/containous/traefik/log"
+	"github.com/containous/traefik/log"
 	"github.com/containous/traefik/safe"
 	"github.com/xenolf/lego/acme"
 	"golang.org/x/net/context"
@@ -16,10 +15,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	log "github.com/Sirupsen/logrus"
-	"github.com/containous/traefik/safe"
-	"github.com/xenolf/lego/acme"
 )
 
 // ACME allows to connect to lets encrypt and retrieve certs
@@ -110,8 +105,10 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 		},
 		leadership.Pool.Ctx(), &Account{},
 		func(object cluster.Object) error {
+			account := object.(*Account)
+			account.Init()
 			if !leadership.IsLeader() {
-				a.client, err = a.buildACMEClient(object.(*Account))
+				a.client, err = a.buildACMEClient(account)
 				if err != nil {
 					log.Errorf("Error building ACME client %+v: %s", object, err.Error())
 				}
@@ -146,11 +143,12 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 			if err != nil {
 				return err
 			}
-			transaction, err := a.store.Begin()
+			transaction, object, err := a.store.Begin()
 			if err != nil {
 				return err
 			}
 			account := object.(*Account)
+			account.Init()
 			var needRegister bool
 			if account == nil || len(account.Email) == 0 {
 				account, err = NewAccount(a.Email)
@@ -158,9 +156,6 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 					return err
 				}
 				needRegister = true
-			} else {
-				account.registration = &acme.RegistrationResource{}
-				err = json.Unmarshal(account.Registration, account.registration)
 			}
 			if err != nil {
 				return err
@@ -177,12 +172,7 @@ func (a *ACME) CreateClusterConfig(leadership *cluster.Leadership, tlsConfig *tl
 				if err != nil {
 					return err
 				}
-				account.registration = reg
-				bytes, err := json.Marshal(account.registration)
-				if err != nil {
-					return err
-				}
-				account.Registration = bytes
+				account.Registration = reg
 			}
 			// The client has a URL to the current Let's Encrypt Subscriber
 			// Agreement. The user will need to agree to it.
@@ -235,11 +225,6 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 			return err
 		}
 		account = object.(*Account)
-		account.registration = &acme.RegistrationResource{}
-		err = json.Unmarshal(account.Registration, account.registration)
-		if err != nil {
-			return err
-		}
 	} else {
 		log.Infof("Generating ACME Account...")
 		account, err = NewAccount(a.Email)
@@ -262,12 +247,7 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 		if err != nil {
 			return err
 		}
-		account.registration = reg
-		bytes, err := json.Marshal(account.registration)
-		if err != nil {
-			return err
-		}
-		account.Registration = bytes
+		account.Registration = reg
 	}
 
 	// The client has a URL to the current Let's Encrypt Subscriber
@@ -280,22 +260,18 @@ func (a *ACME) CreateLocalConfig(tlsConfig *tls.Config, checkOnDemandDomain func
 		if err != nil {
 			return err
 		}
-		a.account.Registration = reg
+		account.Registration = reg
 		err = a.client.AgreeToTOS()
 		if err != nil {
-			log.Errorf("Error sending ACME agreement to TOS: %+v: %s", a.account, err.Error())
+			log.Errorf("Error sending ACME agreement to TOS: %+v: %s", account, err.Error())
 		}
 	}
 	// save account
-	err = a.saveAccount()
+	transaction, _, err := a.store.Begin()
 	if err != nil {
 		return err
 	}
-	trans, err := localStore.Begin()
-	if err != nil {
-		return err
-	}
-	err = trans.Commit(account)
+	err = transaction.Commit(account)
 	if err != nil {
 		return err
 	}
@@ -353,12 +329,12 @@ func (a *ACME) retrieveCertificates() {
 				log.Errorf("Error getting ACME certificate for domain %s: %s", domains, err.Error())
 				continue
 			}
-			transaction, err := a.store.Begin()
+			transaction, object, err := a.store.Begin()
 			if err != nil {
 				log.Errorf("Error creating ACME store transaction from domain %s: %s", domain, err.Error())
 				continue
 			}
-			account = a.store.Get().(*Account)
+			account = object.(*Account)
 			_, err = account.DomainsCertificate.addCertificateForDomains(certificateResource, domain)
 			if err != nil {
 				log.Errorf("Error adding ACME certificate for domain %s: %s", domains, err.Error())
@@ -379,11 +355,11 @@ func (a *ACME) renewCertificates() error {
 	account := a.store.Get().(*Account)
 	for _, certificateResource := range account.DomainsCertificate.Certs {
 		if certificateResource.needRenew() {
-			transaction, err := a.store.Begin()
+			transaction, object, err := a.store.Begin()
 			if err != nil {
 				return err
 			}
-			account = a.store.Get().(*Account)
+			account = object.(*Account)
 			log.Debugf("Renewing certificate %+v", certificateResource.Domains)
 			renewedCert, err := a.client.RenewCertificate(acme.CertificateResource{
 				Domain:        certificateResource.Certificate.Domain,
@@ -447,11 +423,12 @@ func (a *ACME) loadCertificateOnDemand(clientHello *tls.ClientHelloInfo) (*tls.C
 		return nil, err
 	}
 	log.Debugf("Got certificate on demand for domain %s", clientHello.ServerName)
-	transaction, err := a.store.Begin()
+
+	transaction, object, err := a.store.Begin()
 	if err != nil {
 		return nil, err
 	}
-	account = a.store.Get().(*Account)
+	account = object.(*Account)
 	cert, err := account.DomainsCertificate.addCertificateForDomains(certificate, Domain{Main: clientHello.ServerName})
 	if err != nil {
 		return nil, err
@@ -486,12 +463,13 @@ func (a *ACME) LoadCertificateForDomains(domains []string) {
 			return
 		}
 		log.Debugf("Got certificate for domains %+v", domains)
-		transaction, err := a.store.Begin()
+		transaction, object, err := a.store.Begin()
+
 		if err != nil {
 			log.Errorf("Error creating transaction %+v : %v", domains, err)
 			return
 		}
-		account = a.store.Get().(*Account)
+		account = object.(*Account)
 		_, err = account.DomainsCertificate.addCertificateForDomains(certificate, domain)
 		if err != nil {
 			log.Errorf("Error adding ACME certificates %+v : %v", domains, err)

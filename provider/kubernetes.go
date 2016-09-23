@@ -3,11 +3,9 @@ package provider
 import (
 	"fmt"
 	"github.com/containous/traefik/log"
-	"github.com/cenkalti/backoff"
 	"github.com/containous/traefik/provider/k8s"
 	"github.com/containous/traefik/safe"
 	"github.com/containous/traefik/types"
-	"github.com/containous/traefik/utils"
 	"io/ioutil"
 	"os"
 	"reflect"
@@ -16,10 +14,6 @@ import (
 	"text/template"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
-	"github.com/containous/traefik/provider/k8s"
-	"github.com/containous/traefik/safe"
-	"github.com/containous/traefik/types"
 	"github.com/emilevauge/backoff"
 )
 
